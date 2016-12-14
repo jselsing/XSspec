@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 
+""" Correcting for telluric absorption. Primarily used for X-shooter spectra,
+and in combination with the spectrum2d class.
+ """
+
 import os
 import subprocess
 import time
@@ -13,7 +17,11 @@ molecCall = os.path.join(molecBase, 'bin/molecfit')
 transCall = os.path.join(molecBase, 'bin/calctrans')
 
 class molecFit():
-    ''' Sets up and runs a molecfit'''
+
+    ''' Sets up and runs a molecfit to spectral data - requires molecfit in its
+    version 1.2.0 or greater. 
+    See http://www.eso.org/sci/software/pipelines/skytools/molecfit
+    '''
 
     def __init__(self, fitsfile_path, object_name, output_path):
         ''' Reads in the required information to set up the parameter files'''
@@ -24,32 +32,35 @@ class molecFit():
         self.output_path = output_path
         self.molecparfile = []
         self.params = {'basedir': molecBase,
-           'listname': 'none', 'trans' : 1,
-           'columns': 'WAVE FLUX ERR QUAL',
-           'default_error': 0.01, 'wlgtomicron' : 0.0001,
-           'vac_air': 'vac', 'list_molec': [], 'fit_molec': [],
-           'wrange_exclude': 'none',
-           'output_dir': os.path.abspath(os.path.expanduser(output_path)),
-           'plot_creation' : '', 'plot_range': 1,
-           'ftol': 0.01, 'xtol': 0.01,
-           'relcol': [], 'flux_unit': 2,
-           'fit_back': 0, 'telback': 0.1, 'fit_cont': 1, 'cont_n': 3,
-           'cont_const': 1.0, 'fit_wlc': 1, 'wlc_n': 0, 'wlc_const': 0.0,
-           'fit_res_box': 1, 'relres_box': 0.5, 'kernmode': 0, 'fit_res_gauss': 1,
-           'res_gauss': 1.0, 'fit_res_lorentz': 0, 'res_lorentz': 0.5, 'kernfac': 30.0,
-           'varkern': 1, 'kernel_file': 'none'}
+            'listname': 'none', 'trans' : 1,
+            'columns': 'WAVE FLUX ERR QUAL',
+            'default_error': 0.01, 'wlgtomicron' : 0.0001,
+            'vac_air': 'vac', 'list_molec': [], 'fit_molec': [],
+            'wrange_exclude': 'none',
+            'output_dir': os.path.abspath(os.path.expanduser(output_path)),
+            'plot_creation' : '', 'plot_range': 1,
+            'ftol': 0.01, 'xtol': 0.01,
+            'relcol': [], 'flux_unit': 2,
+            'fit_back': 0, 'telback': 0.1, 'fit_cont': 1, 'cont_n': 4,
+            'cont_const': 1.0, 'fit_wlc': 1, 'wlc_n': 1, 'wlc_const': 0.0,
+            'fit_res_box': 0, 'relres_box': 0.0, 'kernmode': 0,
+            'fit_res_gauss': 1, 'res_gauss': 4.0,
+            'fit_res_lorentz': 0, 'res_lorentz': 0.5,
+            'kernfac': 30.0, 'varkern': 1, 'kernel_file': 'none'}
+
         self.headpars = {'utc': 'UTC', 'telalt': 'HIERARCH ESO TEL ALT',
-             'rhum' : 'HIERARCH ESO TEL AMBI RHUM',
-             'obsdate' : 'MJD-OBS',
-             'temp' : 'HIERARCH ESO TEL AMBI TEMP',
-             'm1temp' : 'HIERARCH ESO TEL TH M1 TEMP',
-             'geoelev': 'HIERARCH ESO TEL GEOELEV',
-             'longitude': 'HIERARCH ESO TEL GEOLON',
-             'latitude': 'HIERARCH ESO TEL GEOLAT',
-             'pixsc' : 'CD2_2' }
+            'rhum' : 'HIERARCH ESO TEL AMBI RHUM',
+            'obsdate' : 'MJD-OBS',
+            'temp' : 'HIERARCH ESO TEL AMBI TEMP',
+            'm1temp' : 'HIERARCH ESO TEL TH M1 TEMP',
+            'geoelev': 'HIERARCH ESO TEL GEOELEV',
+            'longitude': 'HIERARCH ESO TEL GEOLON',
+            'latitude': 'HIERARCH ESO TEL GEOLAT',
+            'pixsc' : 'CD2_2' }
+
         self.atmpars = {'ref_atm': 'equ.atm',
             'gdas_dir': os.path.join(molecBase, 'data/profiles/grib'),
-             'gdas_prof': 'none', 'layers': 1, 'emix': 5.0, 'pwv': -1.}
+            'gdas_prof': 'auto', 'layers': 1, 'emix': 5.0, 'pwv': -1.}
 
     def updateParams(self, paramdic, headpars):
         ''' Sets Parameters for molecfit execution'''
@@ -66,27 +77,46 @@ class molecFit():
                 print '\t\tWarning: Parameter %s not known to molecfit'
                 self.params[key] = paramdic[key]
 
+
     def setParams(self):
         ''' Writes Molecfit parameters into file '''
-        wrange = os.path.join(molecBase, 'examples/config/include_xshoo_%s.dat' % self.arm)
+
+        wlinc = {'vis': [[0.686, 0.694], [0.758, 0.762], [0.762, 0.770],
+                     [0.940, 0.951], [0.964, 0.974]],
+            'nir': [[1.12, 1.13], [1.14, 1.15], [1.47, 1.48], [1.48, 1.49],
+                    [1.80, 1.81]]}
+        if self.arm == 'vis':
+            slitkey = 'HIERARCH ESO INS OPTI4 NAME'
+        elif self.arm == 'nir':
+            slitkey = 'HIERARCH ESO INS OPTI5 NAME'
+
+        if not self.fits[0].header[slitkey].endswith('JH'):
+#            wlinc['nir'].append([1.96, 1.97])
+            wlinc['nir'].append([2.06, 2.07])
+
+        wrange = '../molec_tell/%s_molecfit_%s_inc.dat' %(self.name, self.arm)
+        f = open(wrange, 'w')
+        for wls in wlinc[self.arm]:
+            f.write('%.4f %.4f\n' %(wls[0], wls[1]))
+        f.close
+
         prange = os.path.join(molecBase, 'examples/config/exclude_xshoo_%s.dat' % self.arm)
-        self.params['wrange_include'] =  wrange
+        self.params['wrange_include'] =  os.path.abspath(wrange)
         self.params['prange_exclude'] =  prange
 
         if self.arm == 'vis':
             self.params['list_molec'] = ['H2O', 'O2']
             self.params['fit_molec'] = [1, 1]
             self.params['relcol'] = [1.0, 1.0]
-            self.params['wlc_n'] = 0
+            self.params['wlc_n'] = 1
 
         elif self.arm == 'nir':
             self.params['list_molec'] = ['H2O', 'CO2', 'CO', 'CH4', 'O2']
-            self.params['fit_molec'] = [1, 1, 1, 1, 1]
+            self.params['fit_molec'] = [1, 0, 0, 0, 0]
             self.params['relcol'] = [1.0, 1.06, 1.0, 1.0, 1.0]
             self.params['wlc_n'] = 1
 
         print '\tPreparing Molecfit params file'
-
         self.molecparfile = os.path.abspath('../molec_tell/%s_molecfit_%s.par' % (self.name, self.arm))
         f = open(self.molecparfile, 'w')
         f.write('## INPUT DATA\n')
@@ -100,12 +130,7 @@ class molecFit():
                 f.write('%s: %s \n' % (param, self.params[param] ))
 
         f.write('\n## HEADER PARAMETERS\n')
-        if self.arm == 'vis':
-            slitkey = 'HIERARCH ESO INS OPTI4 NAME'
-        elif self.arm == 'nir':
-            slitkey = 'HIERARCH ESO INS OPTI5 NAME'
         slitw = self.fits[0].header[slitkey].split('x')[0]
-
         f.write('slitw: %s\n' %(slitw))
         for headpar in self.headpars.keys():
             f.write('%s: %s \n' % (headpar,  self.fits[0].header[self.headpars[headpar]]))
@@ -116,6 +141,61 @@ class molecFit():
 
         f.write('\nend\n')
         f.close()
+
+
+
+
+
+    # def setParams(self):
+    #     ''' Writes Molecfit parameters into file '''
+    #     wrange = os.path.join(molecBase, 'examples/config/include_xshoo_%s.dat' % self.arm)
+    #     prange = os.path.join(molecBase, 'examples/config/exclude_xshoo_%s.dat' % self.arm)
+    #     self.params['wrange_include'] =  wrange
+    #     self.params['prange_exclude'] =  prange
+
+    #     if self.arm == 'vis':
+    #         self.params['list_molec'] = ['H2O', 'O2']
+    #         self.params['fit_molec'] = [1, 1]
+    #         self.params['relcol'] = [1.0, 1.0]
+    #         self.params['wlc_n'] = 1
+
+    #     elif self.arm == 'nir':
+    #         self.params['list_molec'] = ['H2O', 'CO2', 'CO', 'CH4', 'O2']
+    #         self.params['fit_molec'] = [1, 1, 1, 1, 1]
+    #         self.params['relcol'] = [1.0, 1.06, 1.0, 1.0, 1.0]
+    #         self.params['wlc_n'] = 2
+
+    #     print '\tPreparing Molecfit params file'
+
+    #     self.molecparfile = os.path.abspath('../molec_tell/%s_molecfit_%s.par' % (self.name, self.arm))
+    #     f = open(self.molecparfile, 'w')
+    #     f.write('## INPUT DATA\n')
+    #     f.write('filename: %s\n' % (os.path.abspath(self.input_file_path)))
+    #     f.write('output_name: %s_%s_molecfit\n' % (self.name, self.arm))
+
+    #     for param in self.params.keys():
+    #         if hasattr(self.params[param], '__iter__'):
+    #             f.write('%s: %s \n' % (param, ' '.join([str(a) for a in self.params[param]]) ))
+    #         else:
+    #             f.write('%s: %s \n' % (param, self.params[param] ))
+
+    #     f.write('\n## HEADER PARAMETERS\n')
+    #     if self.arm == 'vis':
+    #         slitkey = 'HIERARCH ESO INS OPTI4 NAME'
+    #     elif self.arm == 'nir':
+    #         slitkey = 'HIERARCH ESO INS OPTI5 NAME'
+    #     slitw = self.fits[0].header[slitkey].split('x')[0]
+
+    #     f.write('slitw: %s\n' %(slitw))
+    #     for headpar in self.headpars.keys():
+    #         f.write('%s: %s \n' % (headpar,  self.fits[0].header[self.headpars[headpar]]))
+
+    #     f.write('\n## ATMOSPHERIC PROFILES\n')
+    #     for atmpar in self.atmpars.keys():
+    #         f.write('%s: %s \n' % (atmpar, self.atmpars[atmpar]))
+
+    #     f.write('\nend\n')
+    #     f.close()
 
     def runMolec(self):
         t1 = time.time()
@@ -176,7 +256,8 @@ class molecFit():
 
 
         # Plot the fit regions
-        wrange = os.path.join(molecBase, 'examples/config/include_xshoo_%s.dat' % self.arm)
+        # wrange = os.path.join(molecBase, 'examples/config/include_xshoo_%s.dat' % self.arm)
+        wrange = os.path.abspath('../molec_tell/%s_molecfit_%s_inc.dat' %(self.name, self.arm))
         g = open(wrange, 'r')
         fitregs = [reg for reg in g.readlines() if not reg.startswith('#')]
 
@@ -197,7 +278,7 @@ class molecFit():
 
                 if len(tcspecp[transmp>0.90]) > 3:
                     cont = np.median(tcspecp[transmp>0.90])/np.median(transmp[transmp>0.90])
-                    ax1.plot(wlp, transmp * cont, '-' ,color = 'firebrick', lw = 2)
+                    ax1.plot(wlp, transmp * cont, '-', color = 'firebrick', lw = 2)
                 else:
                     ax1.errorbar(wlp, tcspec[x1:x2], tcspece[x1:x2],
                     capsize = 0, color = 'firebrick', fmt = 'o', ms = 4,
